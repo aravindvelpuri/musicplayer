@@ -256,7 +256,7 @@ class _AboutScreenState extends State<AboutScreen>
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    'Made with ❤️ for Music',
+                    'Constructed for excellence in audio',
                     style: theme.textTheme.labelSmall?.copyWith(
                       color: Colors.white24,
                       letterSpacing: 1.0,

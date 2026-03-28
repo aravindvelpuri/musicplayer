@@ -1,6 +1,7 @@
 package com.aravindprojects.musicplayer
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import androidx.core.app.ActivityCompat
@@ -46,6 +47,22 @@ class MainActivity : FlutterActivity() {
                     "stopPlayback" -> audioPlayer.stop(result)
                     "getArtwork" -> handleGetArtwork(call, result)
                     "deleteMusicFile" -> handleDeleteMusicFile(call, result)
+                    "getEqualizerBands" -> result.success(audioPlayer.getEqualizerBands())
+                    "setEqualizerBandLevel" -> {
+                        val bandIndex = call.argument<Int>("bandIndex") ?: 0
+                        val level = call.argument<Int>("level") ?: 0
+                        result.success(audioPlayer.setEqualizerBandLevel(bandIndex, level))
+                    }
+                    "setEqualizerEnabled" -> {
+                        val enabled = call.argument<Boolean>("enabled") ?: true
+                        result.success(audioPlayer.setEqualizerEnabled(enabled))
+                    }
+                    "syncQueue" -> {
+                        val tracks = call.argument<List<Any>>("tracks")
+                        val index = call.argument<Int>("index") ?: -1
+                        audioPlayer.syncQueue(tracks, index)
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }
@@ -62,9 +79,29 @@ class MainActivity : FlutterActivity() {
                     }
                 },
             )
+
+        // Handle the initial intent and any future intents while the activity is alive
+        checkIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        // Update the activity's intent so checkIntent() reads the latest data
+        setIntent(intent)
+        checkIntent(intent)
+    }
+
+    private fun checkIntent(intent: Intent?) {
+        if (intent?.getBooleanExtra("open_player", false) == true) {
+            FlutterCommandBridge.sendRemoteCommand("expandPlayer")
+        }
     }
 
     override fun onDestroy() {
+        // Disconnect the event sink *before* the engine tears down so the background
+        // progress timer stops posting to a dead channel (eliminates "FlutterJNI was
+        // detached" warnings when the app is closed while music is playing).
+        audioPlayer.setEventSink(null)
         FlutterCommandBridge.detach(mediaMethodChannel)
         mediaMethodChannel = null
         super.onDestroy()

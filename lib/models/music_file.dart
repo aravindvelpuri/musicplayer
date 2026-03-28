@@ -95,4 +95,17 @@ class MusicFile {
 
     return sourceFolderPath.substring(lastSlashIndex + 1);
   }
+
+  Map<String, dynamic> toMap() {
+    return {
+      'id': id,
+      'title': title,
+      'artist': artist,
+      'album': album,
+      'displayName': displayName,
+      'path': path,
+      'uri': uri,
+      'durationMs': durationMs,
+    };
+  }
 }

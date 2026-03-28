@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:palette_generator/palette_generator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/music_file.dart';
@@ -70,6 +72,14 @@ class LocalMusicPlayerController extends ChangeNotifier {
   final math.Random _random = math.Random();
   StreamSubscription<PlaybackSnapshot>? _eventsSubscription;
   StreamSubscription<String>? _remoteCommandSubscription;
+  final StreamController<String> _uiCommandController = StreamController<String>.broadcast();
+
+  Stream<String> get uiCommands => _uiCommandController.stream;
+
+  List<MusicFile> get queue => _queue;
+
+  PaletteGenerator? _currentPalette;
+  PaletteGenerator? get currentPalette => _currentPalette;
 
   List<MusicFile> _queue = const <MusicFile>[];
   final List<int> _shuffleHistory = <int>[];
@@ -147,13 +157,18 @@ class LocalMusicPlayerController extends ChangeNotifier {
   String? _playbackContext;
   String? get playbackContext => _playbackContext;
 
+  String? _currentPlaylistId;
+  String? get currentPlaylistId => _currentPlaylistId;
+
   void setQueue(
     List<MusicFile> queue, {
     int initialIndex = -1,
     String? playbackContext,
+    String? playlistId,
   }) {
     _queue = List<MusicFile>.unmodifiable(queue);
     _playbackContext = playbackContext;
+    _currentPlaylistId = playlistId;
     _shuffleHistory.removeWhere((index) => index < 0 || index >= _queue.length);
 
     if (_queue.isEmpty) {
@@ -186,6 +201,7 @@ class LocalMusicPlayerController extends ChangeNotifier {
     }
 
     notifyListeners();
+    _syncNativeQueue();
   }
 
   Future<void> playTrackAt(int index) async {
@@ -219,7 +235,9 @@ class LocalMusicPlayerController extends ChangeNotifier {
     notifyListeners();
 
     await _deviceMusicService.playTrack(track);
+    _syncNativeQueue();
     await _loadArtwork(track);
+    _extractPalette(track);
     unawaited(_savePlaybackState());
   }
 
@@ -312,7 +330,7 @@ class LocalMusicPlayerController extends ChangeNotifier {
   }
 
   Future<void> deleteTrack(MusicFile track) async {
-    final success = await _deviceMusicService.deleteMusicFile(track);
+    final success = await _deviceMusicService.deleteMusicFile(track.uri);
     if (!success) return;
 
     // If currently playing the track being deleted, stop playback
@@ -501,18 +519,48 @@ class LocalMusicPlayerController extends ChangeNotifier {
   void dispose() {
     _eventsSubscription?.cancel();
     _remoteCommandSubscription?.cancel();
+    _uiCommandController.close();
     super.dispose();
   }
 
   Future<void> _handleRemoteCommand(String command) async {
-    if (command == 'next') {
-      await playNext();
+    switch (command) {
+      case 'next':
+        await playNext();
+      case 'previous':
+        await playPrevious();
+      case 'togglePlayback':
+        await togglePlayback();
+      case 'stop':
+        await stopPlayback();
+      case 'expandPlayer':
+        _uiCommandController.add('expandPlayer');
+    }
+  }
+
+  Future<void> _extractPalette(MusicFile track) async {
+    final artwork = artworkForTrack(track);
+    if (artwork == null) {
+      _currentPalette = null;
+      notifyListeners();
       return;
     }
 
-    if (command == 'previous') {
-      await playPrevious();
+    try {
+      _currentPalette = await PaletteGenerator.fromImageProvider(
+        MemoryImage(artwork),
+        maximumColorCount: 20,
+      );
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error extracting palette: $e');
+      _currentPalette = null;
+      notifyListeners();
     }
+  }
+
+  void _syncNativeQueue() {
+    unawaited(_deviceMusicService.syncQueue(_queue, _currentIndex));
   }
 }
 

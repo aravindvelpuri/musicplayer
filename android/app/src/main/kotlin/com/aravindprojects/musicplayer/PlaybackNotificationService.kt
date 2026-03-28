@@ -12,6 +12,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.media.app.NotificationCompat.MediaStyle
+import androidx.media.session.MediaButtonReceiver
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
@@ -27,19 +28,87 @@ class PlaybackNotificationService : Service() {
         createNotificationChannel()
         mediaSession = MediaSessionCompat(this, "MusicPlayerSession").apply {
             isActive = true
+            setCallback(object : MediaSessionCompat.Callback() {
+                override fun onPlay() {
+                    if (FlutterCommandBridge.isAttached) {
+                        FlutterCommandBridge.sendRemoteCommand("togglePlayback")
+                    } else {
+                        player.togglePlaybackDirect()
+                    }
+                }
+                override fun onPause() {
+                    if (FlutterCommandBridge.isAttached) {
+                        FlutterCommandBridge.sendRemoteCommand("togglePlayback")
+                    } else {
+                        player.togglePlaybackDirect()
+                    }
+                }
+                override fun onSkipToNext() {
+                    if (FlutterCommandBridge.isAttached) {
+                        FlutterCommandBridge.sendRemoteCommand("next")
+                    } else {
+                        player.playNextNative()
+                    }
+                }
+                override fun onSkipToPrevious() {
+                    if (FlutterCommandBridge.isAttached) {
+                        FlutterCommandBridge.sendRemoteCommand("previous")
+                    } else {
+                        player.playPreviousNative()
+                    }
+                }
+                override fun onStop() {
+                    if (FlutterCommandBridge.isAttached) {
+                        FlutterCommandBridge.sendRemoteCommand("stop")
+                    } else {
+                        player.stopDirect()
+                        stopForeground(STOP_FOREGROUND_REMOVE)
+                        stopSelf()
+                    }
+                }
+            })
         }
         player.setStateObserver(::handlePlaybackState)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        // Let MediaButtonReceiver handle hardware media button events first
+        // (headset single-click, Bluetooth A2DP, etc.)
+        MediaButtonReceiver.handleIntent(mediaSession, intent)
+
         when (intent?.action) {
-            ACTION_TOGGLE_PLAYBACK -> player.togglePlaybackDirect()
-            ACTION_PREVIOUS -> FlutterCommandBridge.sendRemoteCommand("previous")
-            ACTION_NEXT -> FlutterCommandBridge.sendRemoteCommand("next")
+            ACTION_TOGGLE_PLAYBACK -> {
+                // Route through Flutter so the state machine stays in sync.
+                // Fall back to native toggle if the Flutter bridge is not yet attached
+                // (e.g. app process was killed and only the service is running).
+                if (FlutterCommandBridge.isAttached) {
+                    FlutterCommandBridge.sendRemoteCommand("togglePlayback")
+                } else {
+                    player.togglePlaybackDirect()
+                }
+            }
+            ACTION_PREVIOUS -> {
+                if (FlutterCommandBridge.isAttached) {
+                    FlutterCommandBridge.sendRemoteCommand("previous")
+                } else {
+                    player.playPreviousNative()
+                }
+            }
+            ACTION_NEXT -> {
+                if (FlutterCommandBridge.isAttached) {
+                    FlutterCommandBridge.sendRemoteCommand("next")
+                } else {
+                    player.playNextNative()
+                }
+            }
             ACTION_STOP -> {
-                player.stopDirect()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+                if (FlutterCommandBridge.isAttached) {
+                    FlutterCommandBridge.sendRemoteCommand("stop")
+                } else {
+                    player.stopDirect()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
             }
         }
         return START_STICKY
@@ -96,7 +165,7 @@ class PlaybackNotificationService : Service() {
             .setContentTitle(state.title)
             .setContentText(state.artist)
             .setSubText(state.album)
-            .setSmallIcon(R.mipmap.ic_launcher)
+            .setSmallIcon(R.drawable.ic_notification)
             .setLargeIcon(state.artwork)
             .setContentIntent(appLaunchIntent())
             .setDeleteIntent(serviceActionIntent(ACTION_STOP, 40))
@@ -187,6 +256,7 @@ class PlaybackNotificationService : Service() {
     private fun appLaunchIntent(): PendingIntent? {
         val launchIntent = packageManager.getLaunchIntentForPackage(packageName) ?: return null
         launchIntent.flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        launchIntent.putExtra("open_player", true)
         return PendingIntent.getActivity(
             this,
             50,

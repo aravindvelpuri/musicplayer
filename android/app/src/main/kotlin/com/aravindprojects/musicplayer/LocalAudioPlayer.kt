@@ -10,6 +10,7 @@ import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaMetadataRetriever
 import android.media.MediaPlayer
+import android.media.audiofx.Equalizer
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -27,6 +28,14 @@ data class NativePlaybackState(
     val positionMs: Int,
     val durationMs: Int,
     val status: String,
+)
+
+data class NativeTrack(
+    val id: String,
+    val uri: String,
+    val title: String,
+    val artist: String,
+    val album: String,
 )
 
 class LocalAudioPlayer(private val context: Context) {
@@ -89,6 +98,7 @@ class LocalAudioPlayer(private val context: Context) {
     }
 
     private var mediaPlayer: MediaPlayer? = null
+    private var equalizer: Equalizer? = null
     private var eventSink: EventChannel.EventSink? = null
     private var currentTrackId: String? = null
     private var currentDurationMs: Int = 0
@@ -102,6 +112,9 @@ class LocalAudioPlayer(private val context: Context) {
     private var currentAlbum: String = "Unknown album"
     private var currentArtwork: Bitmap? = null
     private var stateObserver: ((NativePlaybackState) -> Unit)? = null
+
+    private var nativeQueue: List<NativeTrack> = emptyList()
+    private var currentIndex: Int = -1
 
     init {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -130,7 +143,7 @@ class LocalAudioPlayer(private val context: Context) {
         title: String,
         artist: String,
         album: String,
-        result: MethodChannel.Result,
+        result: MethodChannel.Result?,
     ) {
         try {
             clearAutoResumeFlags()
@@ -154,48 +167,7 @@ class LocalAudioPlayer(private val context: Context) {
                 return
             }
 
-            currentTrackId = trackId
-            currentDurationMs = 0
-            currentTitle = title.ifBlank { "Unknown title" }
-            currentArtist = artist.ifBlank { "Unknown artist" }
-            currentAlbum = album.ifBlank { "Unknown album" }
-            currentArtwork = loadArtworkBitmap(uriString)
-            lastStatus = "loading"
-            emitState()
-
-            val player = MediaPlayer()
-            mediaPlayer = player
-            player.setAudioAttributes(playbackAudioAttributes)
-            player.setOnPreparedListener { preparedPlayer ->
-                currentDurationMs = safeDuration(preparedPlayer)
-                pendingPlayResult?.success(null)
-                pendingPlayResult = null
-
-                lastStatus = "playing"
-                preparedPlayer.start()
-                startProgressUpdates()
-                emitState()
-            }
-            player.setOnCompletionListener { completedPlayer ->
-                currentDurationMs = safeDuration(completedPlayer)
-                lastStatus = "completed"
-                stopProgressUpdates()
-                emitState()
-            }
-            player.setOnErrorListener { _, _, _ ->
-                lastStatus = "error"
-                stopProgressUpdates()
-                pendingPlayResult?.error(
-                    "playback_failed",
-                    "Unable to start playback.",
-                    null,
-                )
-                pendingPlayResult = null
-                emitState()
-                true
-            }
-            player.setDataSource(context, Uri.parse(uriString))
-            player.prepareAsync()
+            playTrackInternal(trackId, uriString, title, artist, album)
         } catch (error: Exception) {
             lastStatus = "error"
             stopProgressUpdates()
@@ -207,6 +179,73 @@ class LocalAudioPlayer(private val context: Context) {
             pendingPlayResult = null
             emitState()
         }
+    }
+
+    private fun playTrackInternal(
+        trackId: String,
+        uriString: String,
+        title: String,
+        artist: String,
+        album: String,
+    ) {
+        currentTrackId = trackId
+        currentDurationMs = 0
+        currentTitle = title.ifBlank { "Unknown title" }
+        currentArtist = artist.ifBlank { "Unknown artist" }
+        currentAlbum = album.ifBlank { "Unknown album" }
+        currentArtwork = loadArtworkBitmap(uriString)
+        lastStatus = "loading"
+        emitState()
+
+        val player = MediaPlayer()
+        mediaPlayer = player
+        player.setAudioAttributes(playbackAudioAttributes)
+        player.setOnPreparedListener { preparedPlayer ->
+            currentDurationMs = safeDuration(preparedPlayer)
+            pendingPlayResult?.success(null)
+            pendingPlayResult = null
+
+            lastStatus = "playing"
+            preparedPlayer.start()
+
+            // Initialize Equalizer
+            try {
+                equalizer?.release()
+                equalizer = Equalizer(0, preparedPlayer.audioSessionId).apply {
+                    enabled = true
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+
+            startProgressUpdates()
+            emitState()
+        }
+        player.setOnCompletionListener { completedPlayer ->
+            currentDurationMs = safeDuration(completedPlayer)
+            lastStatus = "completed"
+            stopProgressUpdates()
+            emitState()
+            
+            // Auto-advance if native queue is present and Flutter is not attached
+            if (!FlutterCommandBridge.isAttached) {
+                playNextNative()
+            }
+        }
+        player.setOnErrorListener { _, _, _ ->
+            lastStatus = "error"
+            stopProgressUpdates()
+            pendingPlayResult?.error(
+                "playback_failed",
+                "Unable to start playback.",
+                null,
+            )
+            pendingPlayResult = null
+            emitState()
+            true
+        }
+        player.setDataSource(context, Uri.parse(uriString))
+        player.prepareAsync()
     }
 
     fun pause(result: MethodChannel.Result) {
@@ -300,17 +339,27 @@ class LocalAudioPlayer(private val context: Context) {
         }
         val (outputRoute, outputLabel) = currentOutputRoute()
 
-        eventSink?.success(
-            mapOf(
-                "trackId" to currentTrackId,
-                "isPlaying" to (player?.isPlaying ?: false),
-                "positionMs" to positionMs,
-                "durationMs" to currentDurationMs,
-                "status" to lastStatus,
-                "outputRoute" to outputRoute,
-                "outputLabel" to outputLabel,
-            ),
-        )
+        val sink = eventSink
+        if (sink != null) {
+            try {
+                sink.success(
+                    mapOf(
+                        "trackId" to currentTrackId,
+                        "isPlaying" to (player?.isPlaying ?: false),
+                        "positionMs" to positionMs,
+                        "durationMs" to currentDurationMs,
+                        "status" to lastStatus,
+                        "outputRoute" to outputRoute,
+                        "outputLabel" to outputLabel,
+                    ),
+                )
+            } catch (_: Exception) {
+                // The Flutter engine was detached while the sink was still referenced.
+                // Self-null so subsequent calls are no-ops.
+                eventSink = null
+                stopProgressUpdates()
+            }
+        }
         stateObserver?.invoke(
             NativePlaybackState(
                 trackId = currentTrackId,
@@ -389,6 +438,8 @@ class LocalAudioPlayer(private val context: Context) {
         mediaPlayer?.setOnErrorListener(null)
         mediaPlayer?.release()
         mediaPlayer = null
+        equalizer?.release()
+        equalizer = null
         abandonAudioFocus()
 
         if (clearSelection) {
@@ -533,5 +584,83 @@ class LocalAudioPlayer(private val context: Context) {
             AudioDeviceInfo.TYPE_USB_HEADSET,
             AudioDeviceInfo.TYPE_USB_ACCESSORY,
         )
+    }
+
+    fun getEqualizerBands(): Map<String, Any>? {
+        val eq = equalizer ?: return null
+        val numBands = eq.numberOfBands.toInt()
+        val bands = mutableListOf<Map<String, Any>>()
+        
+        for (i in 0 until numBands) {
+            val centerFreq = eq.getCenterFreq(i.toShort())
+            val levelRange = eq.bandLevelRange
+            bands.add(mapOf(
+                "index" to i,
+                "centerFrq" to centerFreq,
+                "minLevel" to levelRange[0].toInt(),
+                "maxLevel" to levelRange[1].toInt(),
+                "currentLevel" to eq.getBandLevel(i.toShort()).toInt()
+            ))
+        }
+        
+        return mapOf(
+            "enabled" to eq.enabled,
+            "bands" to bands
+        )
+    }
+
+    fun setEqualizerBandLevel(bandIndex: Int, level: Int): Boolean {
+        val eq = equalizer ?: return false
+        try {
+            eq.setBandLevel(bandIndex.toShort(), level.toShort())
+            return true
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
+    fun setEqualizerEnabled(enabled: Boolean): Boolean {
+        val eq = equalizer ?: return false
+        try {
+            eq.enabled = enabled
+            return true
+        } catch (e: Exception) {
+            return false
+        }
+    }
+
+    @Suppress("UNCHECKED_CAST")
+    fun syncQueue(tracks: List<Any>?, index: Int) {
+        if (tracks == null) {
+            nativeQueue = emptyList()
+            currentIndex = -1
+            return
+        }
+        
+        nativeQueue = tracks.mapNotNull { item ->
+            val map = item as? Map<String, Any> ?: return@mapNotNull null
+            NativeTrack(
+                id = map["id"] as? String ?: "",
+                uri = map["uri"] as? String ?: "",
+                title = map["title"] as? String ?: "Unknown title",
+                artist = map["artist"] as? String ?: "Unknown artist",
+                album = map["album"] as? String ?: "Unknown album"
+            )
+        }
+        currentIndex = index
+    }
+
+    fun playNextNative() {
+        if (nativeQueue.isEmpty()) return
+        currentIndex = (currentIndex + 1) % nativeQueue.size
+        val track = nativeQueue[currentIndex]
+        playTrack(track.id, track.uri, track.title, track.artist, track.album, null)
+    }
+
+    fun playPreviousNative() {
+        if (nativeQueue.isEmpty()) return
+        currentIndex = if (currentIndex <= 0) nativeQueue.size - 1 else currentIndex - 1
+        val track = nativeQueue[currentIndex]
+        playTrack(track.id, track.uri, track.title, track.artist, track.album, null)
     }
 }

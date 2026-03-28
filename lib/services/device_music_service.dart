@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'dart:async';
 
@@ -64,14 +65,61 @@ class DeviceMusicService {
     });
   }
 
-  Future<bool> deleteMusicFile(MusicFile track) async {
-    final result = await _channel.invokeMethod<bool>(
-      'deleteMusicFile',
-      <String, Object?>{
-        'uri': track.uri,
-      },
-    );
-    return result ?? false;
+  Future<bool> deleteMusicFile(String uri) async {
+    try {
+      final bool? success = await _channel.invokeMethod('deleteMusicFile', {'uri': uri});
+      return success ?? false;
+    } catch (e) {
+      debugPrint('Error deleting music file: $e');
+      return false;
+    }
+  }
+
+  Future<Map<String, dynamic>?> getEqualizerBands() async {
+    try {
+      final Map<dynamic, dynamic>? result = await _channel.invokeMethod('getEqualizerBands');
+      if (result == null) return null;
+      return Map<String, dynamic>.from(result);
+    } catch (e) {
+      debugPrint('Error getting equalizer bands: $e');
+      return null;
+    }
+  }
+
+  Future<bool> setEqualizerBandLevel(int bandIndex, int level) async {
+    try {
+      final bool? success = await _channel.invokeMethod('setEqualizerBandLevel', {
+        'bandIndex': bandIndex,
+        'level': level,
+      });
+      return success ?? false;
+    } catch (e) {
+      debugPrint('Error setting equalizer band level: $e');
+      return false;
+    }
+  }
+
+  Future<bool> setEqualizerEnabled(bool enabled) async {
+    try {
+      final bool? success = await _channel.invokeMethod('setEqualizerEnabled', {
+        'enabled': enabled,
+      });
+      return success ?? false;
+    } catch (e) {
+      debugPrint('Error setting equalizer enabled: $e');
+      return false;
+    }
+  }
+
+  Future<void> syncQueue(List<MusicFile> queue, int index) async {
+    try {
+      await _channel.invokeMethod('syncQueue', {
+        'tracks': queue.map((f) => f.toMap()).toList(),
+        'index': index,
+      });
+    } catch (e) {
+      debugPrint('Error syncing queue: $e');
+    }
   }
 
   Stream<PlaybackSnapshot> playerEvents() {

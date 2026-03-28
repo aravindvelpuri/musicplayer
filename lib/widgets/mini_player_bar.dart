@@ -47,14 +47,17 @@ class MiniPlayerBar extends StatelessWidget {
                   padding: const EdgeInsets.all(12),
                   child: Row(
                     children: [
-                      SongArtwork(
-                        bytes: controller.artworkBytes,
-                        isLoading: controller.isArtworkLoading,
-                        size: 56,
-                        borderRadius: 16,
-                        iconSize: 24,
-                        backgroundColor: const Color(0xFF2D2050),
-                        foregroundColor: Colors.white,
+                      Hero(
+                        tag: 'now-playing-artwork',
+                        child: SongArtwork(
+                          bytes: controller.artworkBytes,
+                          isLoading: controller.isArtworkLoading,
+                          size: 56,
+                          borderRadius: 16,
+                          iconSize: 24,
+                          backgroundColor: const Color(0xFF2D2050),
+                          foregroundColor: Colors.white,
+                        ),
                       ),
                       const SizedBox(width: 12),
                       Expanded(

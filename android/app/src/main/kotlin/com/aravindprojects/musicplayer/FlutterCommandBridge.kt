@@ -9,6 +9,8 @@ object FlutterCommandBridge {
     @Volatile
     private var methodChannel: MethodChannel? = null
 
+    val isAttached: Boolean get() = methodChannel != null
+
     fun attach(channel: MethodChannel) {
         methodChannel = channel
     }
